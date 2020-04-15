@@ -1,0 +1,56 @@
+---
+
+- name: Deploy Grafana App Monitoring instance
+  k8s:
+    state: present
+    namespace: "{{ namespace }}"
+    definition: "{{ lookup('template', 'grafana.yaml.j2') }}"
+  register: out
+  until: out.failed == false
+  retries: "{{ global_retries }}"
+  delay: "{{ global_delay }}"
+
+- include: htpasswd.yml
+
+- name: Generate random password
+  command: 'head /dev/urandom | tr -dc A-Za-z0-9 | head -c255'
+  register: random_pwd
+
+- name: Create Grafana user credential
+  htpasswd:
+    path: "/tmp/{{ grafana_custom_name }}-datasource.htpasswd"
+    name: internal
+    password: "{{ random_pwd.stdout }}"
+
+- name: Create Secret for Grafana access to Prometheus
+  command: "oc create secret generic --from-file=auth=/tmp/{{ grafana_custom_name }}-datasource.htpasswd prometheus-k8s-htpasswd -n {{ namespace }}"
+
+- name: Create Grafana Prometheus DataSource
+  k8s:
+    state: present
+    namespace: "{{ namespace }}"
+    definition:
+      apiVersion: integreatly.org/v1alpha1
+      kind: GrafanaDataSource
+      metadata:
+        name: "{{ grafana_custom_name }}-datasource"
+      spec:
+        datasources:
+          - access: proxy
+            basicAuth: true
+            basicAuthPassword: "{{ random_pwd.stdout }}"
+            basicAuthUser: internal
+            editable: false
+            isDefault: true
+            jsonData:
+              timeInterval: 5s
+              tlsSkipVerify: true
+            name: Prometheus
+            type: prometheus
+            url: "https://{{ prometheus_custom_name }}-{{ namespace }}.{{ domain_url }}:9091"
+            version: 1
+        name: "{{ grafana_custom_name }}-datasource.yaml"
+  register: out
+  until: out.failed == false
+  retries: "{{ global_retries }}"
+  delay: "{{ global_delay }}"
